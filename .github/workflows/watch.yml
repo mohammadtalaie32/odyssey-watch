@@ -1,0 +1,62 @@
+name: Odyssey watch
+
+on:
+  schedule:
+    # Every 5 minutes — GitHub's minimum for scheduled workflows. Note that
+    # scheduled runs are best-effort and can be delayed under load.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run"
+        required: true
+        default: poll
+        type: choice
+        options: [poll, status, test-notify, reset]
+
+# Never let two polls overlap — a second run would diff against stale state
+# and re-alert on changes the first run already sent.
+concurrency:
+  group: odyssey-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # State is the previous poll's seat counts. Each run saves under a unique
+      # key; restore-keys prefix-matches and returns the most recent one.
+      - name: Restore previous state
+        if: inputs.mode != 'reset'
+        uses: actions/cache/restore@v4
+        with:
+          path: ci-state
+          key: odyssey-state-${{ github.run_id }}
+          restore-keys: odyssey-state-
+
+      - name: Run watcher
+        env:
+          ODYSSEY_TELEGRAM_TOKEN: ${{ secrets.ODYSSEY_TELEGRAM_TOKEN }}
+          ODYSSEY_TELEGRAM_CHAT_IDS: ${{ secrets.ODYSSEY_TELEGRAM_CHAT_IDS }}
+          ODYSSEY_NTFY_TOPIC: ${{ secrets.ODYSSEY_NTFY_TOPIC }}
+        run: |
+          case "${{ inputs.mode || 'poll' }}" in
+            status)      ARGS="--status" ;;
+            test-notify) ARGS="--test-notify" ;;
+            reset)       ARGS="--once" ;;   # no cache restored above, so this re-seeds
+            *)           ARGS="--once" ;;
+          esac
+          python3 odyssey_watch.py $ARGS \
+            --config config.ci.json \
+            --state ci-state/state.json
+
+      - name: Save state
+        if: always() && inputs.mode != 'status' && inputs.mode != 'test-notify'
+        uses: actions/cache/save@v4
+        with:
+          path: ci-state
+          key: odyssey-state-${{ github.run_id }}

@@ -1,0 +1,70 @@
+{
+  "film_id": 37617,
+  "film_name": "The Odyssey",
+  "experience_label": "IMAX 70mm",
+  "emoji": "🎬",
+  "theatres": [
+    {
+      "id": 7408,
+      "name": "Cineplex Cinemas Vaughan"
+    },
+    {
+      "id": 7420,
+      "name": "Cineplex Cinemas Mississauga Square One"
+    }
+  ],
+  "require_experience_types": [
+    "IMAX",
+    "70mm"
+  ],
+  "exclude_experience_types": [],
+  "poll_interval_seconds": 120,
+  "alert_on": [
+    "REOPENED",
+    "NEW_SHOWTIME",
+    "SEATS_UP"
+  ],
+  "seats_up_threshold": 4,
+  "seats_up_only_below": 15,
+  "low_seats_threshold": 0,
+  "alert_on_first_run": false,
+  "notify": {
+    "ntfy": {
+      "enabled": false,
+      "server": "https://ntfy.sh",
+      "topic": "odyssey-70mm-CHANGE-ME-to-something-unguessable",
+      "priority": "urgent",
+      "tags": "movie_camera"
+    },
+    "macos": {
+      "enabled": true,
+      "sound": "Glass",
+      "speak": "Odyssey seats available"
+    },
+    "webhook": {
+      "enabled": false,
+      "style": "discord",
+      "url": "env:ODYSSEY_WEBHOOK_URL",
+      "mention": "@here"
+    },
+    "telegram": {
+      "enabled": false,
+      "bot_token": "env:ODYSSEY_TELEGRAM_TOKEN",
+      "chat_ids": [
+        "123456789"
+      ]
+    },
+    "email": {
+      "enabled": false,
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 587,
+      "username": "you@example.com",
+      "password": "env:ODYSSEY_SMTP_PASSWORD",
+      "from": "you@example.com",
+      "to": [
+        "you@example.com",
+        "friend@example.com"
+      ]
+    }
+  }
+}

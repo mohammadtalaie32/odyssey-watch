@@ -1,0 +1,55 @@
+{
+  "_comment": "Config used by the GitHub Actions runner. Safe to commit: every secret indirects through an env var supplied by GitHub Secrets. Local runs use config.json instead.",
+  "film_id": 37617,
+  "film_name": "The Odyssey",
+  "experience_label": "IMAX 70mm",
+  "emoji": "🎬",
+  "theatres": [
+    {
+      "id": 7408,
+      "name": "Cineplex Cinemas Vaughan"
+    },
+    {
+      "id": 7420,
+      "name": "Cineplex Cinemas Mississauga Square One"
+    }
+  ],
+  "require_experience_types": [
+    "IMAX",
+    "70mm"
+  ],
+  "exclude_experience_types": [],
+  "alert_on": [
+    "REOPENED",
+    "NEW_SHOWTIME",
+    "SEATS_UP",
+    "LOW_SEATS"
+  ],
+  "seats_up_threshold": 4,
+  "seats_up_only_below": 15,
+  "low_seats_threshold": 6,
+  "alert_on_first_run": false,
+  "notify": {
+    "telegram": {
+      "enabled": true,
+      "bot_token": "env:ODYSSEY_TELEGRAM_TOKEN",
+      "chat_ids": "env:ODYSSEY_TELEGRAM_CHAT_IDS"
+    },
+    "ntfy": {
+      "enabled": true,
+      "server": "https://ntfy.sh",
+      "topic": "env:ODYSSEY_NTFY_TOPIC",
+      "priority": "urgent",
+      "tags": "movie_camera"
+    },
+    "macos": {
+      "enabled": false
+    },
+    "webhook": {
+      "enabled": false
+    },
+    "email": {
+      "enabled": false
+    }
+  }
+}

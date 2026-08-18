@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.moe.odyssey-watch</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/moe/Projects/odyssey-watch/odyssey_watch.py</string>
+    <string>--daemon</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/moe/Projects/odyssey-watch</string>
+
+  <!-- Start at login and restart if it ever dies. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/moe/Projects/odyssey-watch/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/moe/Projects/odyssey-watch/launchd.err.log</string>
+
+  <!-- Secrets referenced from config.json as "env:NAME" go here. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ODYSSEY_SMTP_PASSWORD</key>
+    <string></string>
+    <key>ODYSSEY_WEBHOOK_URL</key>
+    <string></string>
+    <key>ODYSSEY_TELEGRAM_TOKEN</key>
+    <string></string>
+  </dict>
+</dict>
+</plist>

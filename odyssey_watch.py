@@ -146,9 +146,11 @@ def fetch_sessions(film_id, theatre):
                                 "sold_out": bool(session.get("isSoldOut")),
                                 "in_past": bool(session.get("isInThePast")),
                                 "online": bool(session.get("isShowtimeEnabledOnline")),
-                                "url": session.get("ticketingUrl")
-                                or session.get("seatMapUrl"),
+                                # ticketingUrl is deliberately NOT used: it's an
+                                # apis.cineplex.com route that 401s without the
+                                # subscription key, so it's dead in a browser.
                                 "seatmap_url": session.get("seatMapUrl"),
+                                "deeplink": session.get("deeplinkUrl"),
                             }
                         )
     return out
@@ -273,7 +275,17 @@ def pretty_time(iso):
 
 
 def booking_link(session):
-    return session["url"] or session["seatmap_url"] or "https://www.cineplex.com"
+    """A link that actually opens in a browser.
+
+    seatMapUrl goes straight to the seat map, so the seat count in an alert can
+    be checked against Cineplex directly; deeplinkUrl is Cineplex's own redirect
+    to the movie page with the session preselected.
+    """
+    return (
+        session.get("seatmap_url")
+        or session.get("deeplink")
+        or "https://www.cineplex.com/movie/the-odyssey"
+    )
 
 
 def format_alerts(cfg, alerts):

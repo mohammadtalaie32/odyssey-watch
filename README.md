@@ -121,6 +121,10 @@ launchctl load   ~/Library/LaunchAgents/com.moe.odyssey-watch.plist # start it a
 To uninstall completely: `launchctl unload` as above, then
 `rm ~/Library/LaunchAgents/com.moe.odyssey-watch.plist`.
 
+The tracked file is `com.moe.odyssey-watch.plist.example`; copy it to
+`com.moe.odyssey-watch.plist` (gitignored) before putting any real token in its
+`EnvironmentVariables`, so a secret can never be committed by accident.
+
 Note it reads `config.json` at startup, so **restart it (unload + load) after editing
 config** — e.g. after switching Telegram on. Secrets go in the plist's
 `EnvironmentVariables` block, since a LaunchAgent doesn't inherit your shell's env.

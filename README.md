@@ -68,6 +68,67 @@ python3 odyssey_watch.py --test-notify
 
 **macOS banners — active** as a local backstop while your Mac is awake.
 
+## Using the bot (buttons)
+
+`odyssey_bot.py` is the interactive half: the watcher pushes alerts at you, the bot
+lets you pull. Open [@cineplex_ticket_finder_bot](https://t.me/cineplex_ticket_finder_bot)
+and send anything (or `/start`) to get the menu.
+
+```
+The Odyssey — IMAX 70mm
+226 showtimes in the booking window
+224 with seats · 2 sold out
+4 nearly gone (10 seats or fewer)
+
+[ 🎬 Vaughan ]  [ 🎬 Mississauga Square One ]
+[ 🔥 Almost gone ]  [ 🎟 Sold out ]
+[ 🔄 Refresh ]
+```
+
+Tapping a theatre gives one day at a time — every showtime with a live seat count,
+`Prev day` / `Next day` to move through the booking window, and a **Book** button per
+showtime that opens Cineplex's seat map. That's the point: the seat map is the source of
+truth, so you can tap through and confirm the bot's number against Cineplex itself.
+
+- 🟢 plenty of seats · 🟠 10 or fewer · 🔴 sold out
+- **Almost gone** — everything under 10 seats across both theatres, tightest first
+- **Sold out** — exactly the showtimes being watched for cancellations
+- **Refresh** re-queries Cineplex (results are cached 30s so rapid taps don't hammer it)
+
+The bot only answers chat ids listed in `notify.telegram.chat_ids`; its username is public,
+so without that anyone could drive Cineplex requests through it. Set `"bot_allow_any": true`
+to lift that.
+
+```bash
+python3 odyssey_bot.py           # long-poll for taps (needs ODYSSEY_TELEGRAM_TOKEN)
+python3 odyssey_bot.py --menu    # push the menu to every configured chat
+```
+
+### Alerts vs. buttons need different hosting
+
+They're independent, and only one of them can live on GitHub Actions:
+
+| | Alerts (`odyssey_watch.py`) | Buttons (`odyssey_bot.py`) |
+|---|---|---|
+| Needs | a cron | a process that's always listening |
+| Runs on | GitHub Actions, 24/7 | a LaunchAgent on this Mac |
+| If the Mac sleeps | unaffected | buttons stop responding until it wakes |
+
+A button tap has to be answered within seconds, and a 5-minute cron can't do that — so the
+bot can't move to Actions. It's installed as `com.moe.odyssey-bot` and restarts at login:
+
+```bash
+launchctl list | grep odyssey-bot
+launchctl unload ~/Library/LaunchAgents/com.moe.odyssey-bot.plist   # stop
+launchctl load   ~/Library/LaunchAgents/com.moe.odyssey-bot.plist   # start
+tail -f bot.log
+```
+
+That plist holds the bot token, so it is gitignored — never commit it. For buttons that work
+while the Mac is off, run `odyssey_bot.py` on any always-on box (Raspberry Pi, free-tier VM)
+with `ODYSSEY_TELEGRAM_TOKEN` set. Only one process may long-poll a given bot token at a
+time, so stop the local one first.
+
 ## Commands
 
 ```bash

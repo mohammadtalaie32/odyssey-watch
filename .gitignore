@@ -4,3 +4,4 @@ ci-state/
 *.log
 __pycache__/
 com.moe.odyssey-watch.plist
+com.moe.odyssey-bot.plist

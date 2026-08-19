@@ -42,6 +42,7 @@ STATE_PATH = os.environ.get("ODYSSEY_STATE") or os.path.join(HERE, "state.json")
 LOG_PATH = os.environ.get("ODYSSEY_LOG") or os.path.join(HERE, "watch.log")
 
 API_BASE = "https://apis.cineplex.com/prod/cpx/theatrical/api/v1"
+TICKETING_BASE = "https://apis.cineplex.com/prod/ticketing/api/v1"
 # Public key embedded in Cineplex's own web bundle; not a secret credential.
 API_KEY = "dcdac5601d864addbc2675a2e96cb1f8"
 USER_AGENT = (
@@ -74,8 +75,7 @@ def log(msg):
 # --------------------------------------------------------------------------
 
 
-def api_get(path, params):
-    url = "%s/%s?%s" % (API_BASE, path.lstrip("/"), urllib.parse.urlencode(params))
+def get_json(url):
     req = urllib.request.Request(
         url,
         headers={
@@ -91,6 +91,63 @@ def api_get(path, params):
     if raw[:2] == b"\x1f\x8b":
         raw = gzip.decompress(raw)
     return json.loads(raw.decode("utf-8"))
+
+
+def api_get(path, params):
+    return get_json(
+        "%s/%s?%s" % (API_BASE, path.lstrip("/"), urllib.parse.urlencode(params))
+    )
+
+
+# --------------------------------------------------------------------------
+# Seat maps
+#
+# The showtimes API only reports a total seat count, which says nothing about
+# where those seats are. These two endpoints are what the seat-map preview page
+# itself calls, and both are plain reads needing no cart, login or session:
+#
+#   /v1/theatre/{t}/showtime/{s}/seat-layout                  rows and seat ids
+#   /v1/theatre/{t}/showtime/{s}/seat-availability?preview=1  id -> Available
+#
+# There is also a seat-availability-for-cart variant; it needs a checkout cart,
+# and nothing here touches it.
+# --------------------------------------------------------------------------
+
+
+def seat_url(theatre_id, showtime_id, leaf):
+    return "%s/theatre/%s/showtime/%s/%s" % (
+        TICKETING_BASE, theatre_id, showtime_id, leaf
+    )
+
+
+def fetch_seat_rows(theatre_id, showtime_id):
+    """Map every seat id in this auditorium to its row label.
+
+    The layout is a property of the room, not the showing, so one fetch per
+    theatre is reused for every showtime there.
+    """
+    data = get_json(seat_url(theatre_id, showtime_id, "seat-layout"))
+    rows = {}
+    for area in ("standardSeats", "dboxSeats", "balconySeats"):
+        block = data.get(area) or {}
+        for row in block.get("rows") or []:
+            label = row.get("label")
+            if not label:
+                continue  # spacer rows have a null label and no seats
+            for seat in row.get("seats") or []:
+                # Type matters: rows can contain Wheelchair and Companion
+                # spaces, which shouldn't count as "a seat opened up".
+                rows[seat["id"]] = "%s|%s" % (label, seat.get("type") or "Standard")
+    return rows
+
+
+def fetch_free_seats(theatre_id, showtime_id):
+    """Seat ids currently bookable for this showtime."""
+    data = get_json(
+        seat_url(theatre_id, showtime_id, "seat-availability") + "?preview=true"
+    )
+    statuses = data.get("seatAvailabilities") or {}
+    return [sid for sid, status in statuses.items() if status == "Available"]
 
 
 def find_film(name_fragment):
@@ -189,14 +246,120 @@ def collect(cfg):
 # --------------------------------------------------------------------------
 
 
+def required_rows(cfg):
+    return [r.strip().upper() for r in (cfg.get("require_rows") or []) if r.strip()]
+
+
+def resolve_rows(cfg, sessions, state, log_fn=None):
+    """Attach a `row_seats` count to each session: free seats in the wanted rows.
+
+    Seat maps are per showtime, so checking all ~226 every poll would mean ~450
+    requests. Two things keep that down to a handful:
+
+      * the row layout is cached per theatre (two fetches, ever), and
+      * availability is only re-read when the showtime's total seat count has
+        actually moved since the last poll — if the total is unchanged, the
+        seats behind it are unchanged too.
+
+    Returns the number of availability requests made.
+    """
+    wanted = set(required_rows(cfg))
+    if not wanted:
+        return 0
+    kinds = set(cfg.get("seat_types") or ["Standard"])
+
+    layouts = state.setdefault("layouts", {})
+    known = state.get("sessions", {})
+    calls = 0
+
+    tick = state.get("tick", 0) + 1
+    state["tick"] = tick
+
+    # A changed total is the cheap signal that seats moved, but it can miss a
+    # cancellation in F offset by a booking in A within the same interval. So
+    # each poll also refreshes the stalest few showtimes outright, which means
+    # any missed change self-heals within a full sweep instead of persisting.
+    sweep = max(0, int(cfg.get("seat_refresh_per_poll", 30)))
+    live = [s for s in sessions if seats_of(s) > 0]
+    stale = sorted(live, key=lambda s: (known.get(s["id"]) or {}).get("checked", 0))
+    due = {s["id"] for s in stale[:sweep]}
+
+    for s in sessions:
+        tid = str(s["theatre_id"])
+        prev = known.get(s["id"]) or {}
+        total = seats_of(s)
+
+        if total <= 0:
+            s["row_seats"] = 0
+            s["row_labels"] = []
+            s["checked"] = tick
+            continue
+
+        cached = prev.get("seats") == total and "row_seats" in prev
+        if cached and s["id"] not in due:
+            s["row_seats"] = prev["row_seats"]
+            s["row_labels"] = prev.get("row_labels", [])
+            s["checked"] = prev.get("checked", 0)
+            continue
+
+        try:
+            if tid not in layouts:
+                layouts[tid] = fetch_seat_rows(s["theatre_id"], s["id"])
+            rows = layouts[tid]
+            free = fetch_free_seats(s["theatre_id"], s["id"])
+            calls += 1
+        except Exception as exc:
+            # Fall back to the previous answer rather than inventing one; a
+            # missing seat map must never manufacture an alert.
+            if log_fn:
+                log_fn("WARN seat map failed for %s - %s" % (s["id"], exc))
+            s["row_seats"] = prev.get("row_seats", 0)
+            s["row_labels"] = prev.get("row_labels", [])
+            s["checked"] = prev.get("checked", 0)
+            continue
+
+        hits = []
+        for sid in free:
+            entry = rows.get(sid)
+            if not entry:
+                continue
+            label, _, seat_type = entry.partition("|")
+            if label in wanted and seat_type in kinds:
+                hits.append(label)
+        s["row_seats"] = len(hits)
+        s["row_labels"] = sorted(set(hits))
+        s["checked"] = tick
+
+    return calls
+
+
 def seats_of(session):
     if session["sold_out"]:
         return 0
     return session["seats"] if session["seats"] is not None else 0
 
 
+def counted_seats(cfg, session):
+    """The seat count every alert rule is judged against.
+
+    With require_rows set this is the number of free seats in those rows, so a
+    showtime with 40 seats all in the front rows counts as zero.
+    """
+    if required_rows(cfg) and "row_seats" in session:
+        return session["row_seats"]
+    return seats_of(session)
+
+
 def available(session):
     return session["online"] and not session["sold_out"] and seats_of(session) > 0
+
+
+def bookable(cfg, session):
+    return (
+        session["online"]
+        and not session["sold_out"]
+        and counted_seats(cfg, session) > 0
+    )
 
 
 def diff(cfg, sessions, state):
@@ -215,8 +378,10 @@ def diff(cfg, sessions, state):
     alerts = []
     for s in sessions:
         prev = known.get(s["id"])
-        now_seats = seats_of(s)
-        now_avail = available(s)
+        # With require_rows set, "seats" here means seats in those rows only, so
+        # every rule below is automatically row-aware.
+        now_seats = counted_seats(cfg, s)
+        now_avail = bookable(cfg, s)
 
         if prev is None:
             # On the very first run everything is "new"; only shout about it if
@@ -226,8 +391,10 @@ def diff(cfg, sessions, state):
                     alerts.append(("NEW_SHOWTIME", s, None))
             continue
 
-        was_avail = prev.get("available", False)
-        was_seats = prev.get("seats", 0)
+        was_avail = prev.get("bookable", prev.get("available", False))
+        was_seats = prev.get(
+            "row_seats" if required_rows(cfg) else "seats", prev.get("seats", 0)
+        )
 
         if now_avail and not was_avail and "REOPENED" in enabled:
             alerts.append(("REOPENED", s, was_seats))
@@ -249,16 +416,22 @@ def diff(cfg, sessions, state):
     return alerts, first_run
 
 
-def snapshot(sessions):
-    return {
-        s["id"]: {
+def snapshot(cfg, sessions):
+    out = {}
+    for s in sessions:
+        entry = {
             "seats": seats_of(s),
             "available": available(s),
+            "bookable": bookable(cfg, s),
             "start": s["start"],
             "theatre": s["theatre"],
         }
-        for s in sessions
-    }
+        if "row_seats" in s:
+            entry["row_seats"] = s["row_seats"]
+            entry["row_labels"] = s.get("row_labels", [])
+            entry["checked"] = s.get("checked", 0)
+        out[s["id"]] = entry
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -319,10 +492,21 @@ def format_alerts(cfg, alerts):
                 "  %s  -  %s"
                 % (pretty_time(s["start"]), s["theatre"])
             )
-            lines.append(
-                "    %d seat%s left%s"
-                % (seats_of(s), "" if seats_of(s) == 1 else "s", change)
-            )
+            if required_rows(cfg):
+                # Name the rows so the claim can be checked on the seat map.
+                where = ", ".join(s.get("row_labels") or []) or "-"
+                lines.append(
+                    "    %d seat%s in row%s %s%s  (%d in the room)"
+                    % (s.get("row_seats", 0),
+                       "" if s.get("row_seats") == 1 else "s",
+                       "" if len(s.get("row_labels") or []) == 1 else "s",
+                       where, change, seats_of(s))
+                )
+            else:
+                lines.append(
+                    "    %d seat%s left%s"
+                    % (seats_of(s), "" if seats_of(s) == 1 else "s", change)
+                )
             lines.append("    %s" % booking_link(s))
         lines.append("")
 
@@ -578,11 +762,21 @@ def poll_once(cfg, state, dry_run=False):
         # then re-alert on everything once the API comes back.
         return state, 0
 
+    seat_calls = resolve_rows(cfg, sessions, state, log_fn=log)
+
     alerts, first_run = diff(cfg, sessions, state)
     avail = sum(1 for s in sessions if available(s))
+    rows = required_rows(cfg)
+    detail = ""
+    if rows:
+        in_rows = sum(1 for s in sessions if bookable(cfg, s))
+        detail = ", %d with seats in %s (%d seat map%s read)" % (
+            in_rows, "".join(rows), seat_calls, "" if seat_calls == 1 else "s"
+        )
     log(
-        "poll: %d showtimes, %d with seats, %d alert(s)%s"
-        % (len(sessions), avail, len(alerts), " [seeding baseline]" if first_run else "")
+        "poll: %d showtimes, %d with seats%s, %d alert(s)%s"
+        % (len(sessions), avail, detail, len(alerts),
+           " [seeding baseline]" if first_run else "")
     )
 
     if alerts:
@@ -596,7 +790,8 @@ def poll_once(cfg, state, dry_run=False):
                 log("WARN notify failed - %s" % f)
 
     state = {
-        "sessions": snapshot(sessions),
+        "sessions": snapshot(cfg, sessions),
+        "layouts": state.get("layouts", {}),  # per-theatre, fetched once
         "last_poll": datetime.now().isoformat(timespec="seconds"),
         "available_count": avail,
         "total_count": len(sessions),

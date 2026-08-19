@@ -30,6 +30,43 @@ Each poll is diffed against the previous one (`state.json`) and alerts fire on:
 | `SEATS_UP` | Seats jumped by `seats_up_threshold`+ on a show that had fewer than `seats_up_only_below` left — a bulk return on a scarce showtime. |
 | `LOW_SEATS` | Seats fell to `low_seats_threshold` or below — last chance. Off by default. |
 
+### Row filtering
+
+`require_rows` narrows everything to seats in specific rows. With
+`["F","G","H","I","J"]` set, a showtime with 51 free seats all in rows A–E counts as
+**zero** — no alert, and the bot marks it "none in FGHIJ". Every rule above then operates on
+the row count rather than the room total.
+
+This matters more than it sounds: at the time of writing, 224 showtimes had seats and only
+**3** had one in F–J. Without the filter, essentially every alert would be a seat you don't
+want.
+
+The showtimes API only reports a room total, so row data comes from the two endpoints the
+seat-map page itself calls — both plain reads, no cart, login or session:
+
+```
+GET /v1/theatre/{theatreId}/showtime/{showtimeId}/seat-layout
+GET /v1/theatre/{theatreId}/showtime/{showtimeId}/seat-availability?preview=true
+```
+
+Layout gives rows (`A`…`J`) and seat types; availability gives `{seat_id: Available|Occupied}`.
+Joining them was cross-checked against `seatsRemaining` and matched.
+
+`seat_types` (default `["Standard"]`) excludes Wheelchair and Companion spaces, so an
+accessible space opening never reads as "a seat freed up". Both IMAX rooms currently keep
+those in row E only, but the filter means that isn't relied on.
+
+**Request volume** is the cost, and three things keep it bounded:
+
+- seat layouts are per *auditorium*, so they're fetched **twice, ever**, and cached in state
+- availability is re-read only when a showtime's total seat count actually moved
+- plus `seat_refresh_per_poll` (default 30) stalest showtimes each poll
+
+That last one exists because a cancellation in row F offset by a booking in row A leaves the
+total unchanged — the cheap signal would miss it. The rolling sweep means any such miss
+self-heals within a full pass (~8 polls) instead of persisting. A cold start reads every seat
+map once (~220 requests, ~15s); steady state is ~30.
+
 The first run seeds the baseline silently (set `alert_on_first_run: true` to change that),
 and a total API outage never wipes state, so you don't get an alert storm when it recovers.
 

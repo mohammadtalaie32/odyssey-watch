@@ -1,6 +1,7 @@
 config.json
 state.json
 ci-state/
+bot-rows.json
 *.log
 __pycache__/
 com.moe.odyssey-watch.plist

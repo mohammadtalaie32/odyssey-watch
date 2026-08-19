@@ -19,6 +19,17 @@
     "70mm"
   ],
   "exclude_experience_types": [],
+  "require_rows": [
+    "F",
+    "G",
+    "H",
+    "I",
+    "J"
+  ],
+  "seat_types": [
+    "Standard"
+  ],
+  "seat_refresh_per_poll": 30,
   "alert_on": [
     "REOPENED",
     "NEW_SHOWTIME",

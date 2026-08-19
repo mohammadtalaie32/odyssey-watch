@@ -32,6 +32,59 @@ API = "https://api.telegram.org/bot%s/%s"
 _CACHE = {"at": 0.0, "sessions": None}
 CACHE_TTL = 30
 
+# Row lookups are cached here between taps: seat layouts are per theatre and
+# never change, so this stays warm after the first use.
+ROW_STATE_PATH = "bot-rows.json"
+_ROWS = None
+
+
+def row_state():
+    global _ROWS
+    if _ROWS is None:
+        _ROWS = ow.load_json(ROW_STATE_PATH, {})
+    return _ROWS
+
+
+def save_row_state():
+    if _ROWS is not None:
+        try:
+            with open(ROW_STATE_PATH, "w") as fh:
+                json.dump(_ROWS, fh)
+        except OSError:
+            pass
+
+
+def resolve(cfg, subset):
+    """Fill in row_seats for just the showtimes about to be displayed.
+
+    Scoping this to what's on screen keeps a tap responsive — four seat maps,
+    not two hundred — and means the number shown is read live rather than
+    inherited from an earlier poll.
+    """
+    if not ow.required_rows(cfg) or not subset:
+        return
+    st = row_state()
+    ow.resolve_rows(cfg, subset, st)
+    sessions = st.setdefault("sessions", {})
+    for s in subset:
+        if "row_seats" in s:
+            sessions[s["id"]] = {
+                "seats": ow.seats_of(s),
+                "row_seats": s["row_seats"],
+                "row_labels": s.get("row_labels", []),
+                "checked": s.get("checked", 0),
+            }
+    save_row_state()
+
+
+def row_note(cfg, s):
+    """' · 2 in F,G' style suffix, or a marker that F-J is empty."""
+    if not ow.required_rows(cfg) or "row_seats" not in s:
+        return ""
+    if s["row_seats"] <= 0:
+        return "  ·  none in %s" % "".join(ow.required_rows(cfg))
+    return "  ·  <b>%d in %s</b>" % (s["row_seats"], ",".join(s["row_labels"]))
+
 
 def tg(token, method, **params):
     payload = {}
@@ -89,12 +142,52 @@ def screen_menu(cfg, sessions):
         text.append("%d nearly gone (10 seats or fewer)" % len(tight))
     text += ["", "<i>Pick a theatre to see showtimes and seat counts.</i>"]
 
-    rows = [[{"text": t["name"].replace("Cineplex Cinemas ", "🎬 "),
-              "callback_data": "th:%s:0" % t["id"]}]
-            for t in cfg["theatres"]]
+    want = ow.required_rows(cfg)
+    rows = []
+    if want:
+        text.insert(4, "Filtering for rows <b>%s</b>" % ",".join(want))
+        rows.append([{"text": "🎯 Seats in rows %s" % "".join(want),
+                      "callback_data": "rows"}])
+    rows += [[{"text": t["name"].replace("Cineplex Cinemas ", "🎬 "),
+               "callback_data": "th:%s:0" % t["id"]}]
+             for t in cfg["theatres"]]
     rows.append([{"text": "🔥 Almost gone", "callback_data": "low"},
                  {"text": "🎟 Sold out", "callback_data": "out"}])
     rows.append([{"text": "🔄 Refresh", "callback_data": "menu:r"}])
+    return "\n".join(text), rows
+
+
+def screen_rows(cfg, sessions):
+    """The showtimes that actually matter: ones with a seat in the wanted rows."""
+    want = ow.required_rows(cfg)
+    live = [s for s in sessions if ow.available(s)]
+    resolve(cfg, live)
+    hits = [s for s in live if s.get("row_seats", 0) > 0]
+    hits.sort(key=lambda s: s["start"] or "")
+
+    text = ["<b>🎯 Seats in rows %s</b>" % ",".join(want), ""]
+    rows = []
+    if not hits:
+        text += ["Nothing available in those rows right now.",
+                 "",
+                 "<i>%d showtimes have seats, but all of them are in other rows. "
+                 "You'll be alerted the moment one opens in %s.</i>"
+                 % (len(live), ",".join(want))]
+    else:
+        for s in hits:
+            where = s["theatre"].replace("Cineplex Cinemas ", "")
+            text.append("🎯 <b>%s</b> — %d in row %s\n     %s · %d free in the room"
+                        % (esc(ow.pretty_time(s["start"])), s["row_seats"],
+                           ",".join(s["row_labels"]), esc(where), ow.seats_of(s)))
+            rows.append([{"text": "🎟 %s · %s (row %s)"
+                          % (ow.pretty_time(s["start"]), where.replace(" Square One", ""),
+                             ",".join(s["row_labels"])),
+                          "url": ow.booking_link(s)}])
+        text += ["", "<i>Tap to open the seat map and confirm.</i>"]
+
+    rows = rows[:8]
+    rows.append([{"text": "🏠 Menu", "callback_data": "menu"},
+                 {"text": "🔄 Refresh", "callback_data": "rows:r"}])
     return "\n".join(text), rows
 
 
@@ -129,6 +222,9 @@ def screen_theatre(cfg, sessions, theatre_id, day_index):
     heading = datetime.strptime(day, "%Y-%m-%d").strftime("%A, %B %-d")
     text = ["<b>%s</b>" % esc(name), "<b>%s</b>" % esc(heading), ""]
 
+    # Only the handful on screen, so the row counts are read live on each tap.
+    resolve(cfg, [s for s in todays if ow.available(s)])
+
     book_rows = []
     for s in todays:
         when = ow.pretty_time(s["start"]).split(", ")[-1]
@@ -136,11 +232,13 @@ def screen_theatre(cfg, sessions, theatre_id, day_index):
             text.append("🔴 <b>%s</b> — SOLD OUT" % esc(when))
             continue
         seats = ow.seats_of(s)
-        dot = "🟠" if seats <= 10 else "🟢"
-        text.append("%s <b>%s</b> — %d seat%s" % (dot, esc(when), seats, "" if seats == 1 else "s"))
-        book_rows.append(
-            [{"text": "🎟 Book %s (%d left)" % (when, seats), "url": ow.booking_link(s)}]
-        )
+        dot = "🎯" if s.get("row_seats", 0) > 0 else ("🟠" if seats <= 10 else "🟢")
+        text.append("%s <b>%s</b> — %d seat%s%s"
+                    % (dot, esc(when), seats, "" if seats == 1 else "s", row_note(cfg, s)))
+        label = "🎟 Book %s (%d left)" % (when, seats)
+        if s.get("row_seats", 0) > 0:
+            label = "🎯 Book %s (row %s)" % (when, ",".join(s["row_labels"]))
+        book_rows.append([{"text": label, "url": ow.booking_link(s)}])
 
     text += ["", "<i>Tap Book to open Cineplex's seat map and check it yourself.</i>"]
 
@@ -204,6 +302,8 @@ def render(cfg, data, force=False):
     sessions = get_sessions(cfg, force=force)
     if parts[0] == "th":
         return screen_theatre(cfg, sessions, parts[1], parts[2])
+    if parts[0] == "rows":
+        return screen_rows(cfg, sessions)
     if parts[0] in ("low", "out"):
         return screen_filtered(cfg, sessions, parts[0])
     return screen_menu(cfg, sessions)
@@ -251,16 +351,19 @@ def handle_update(token, cfg, update):
             tg(token, "answerCallbackQuery", callback_query_id=cb["id"], text="Not authorised")
             return
         data = cb.get("data") or "menu"
+        # Answer before rendering: a full row scan reads many seat maps and can
+        # take longer than Telegram is willing to spin for.
+        note = "Checking seat maps…" if data.startswith("rows") else None
+        try:
+            tg(token, "answerCallbackQuery", callback_query_id=cb["id"], text=note)
+        except Exception:
+            pass
         try:
             text, rows = render(cfg, data)
-            note = "Updated" if data.endswith(":r") else None
         except Exception as exc:
             text, rows = "Couldn't reach Cineplex:\n%s" % esc(exc), [
                 [{"text": "🔄 Try again", "callback_data": "menu:r"}]
             ]
-            note = "Failed"
-        # Answer first so the client's spinner stops even if the edit is a no-op.
-        tg(token, "answerCallbackQuery", callback_query_id=cb["id"], text=note)
         try:
             tg(token, "editMessageText", chat_id=chat_id, message_id=message_id,
                text=text, parse_mode="HTML",
